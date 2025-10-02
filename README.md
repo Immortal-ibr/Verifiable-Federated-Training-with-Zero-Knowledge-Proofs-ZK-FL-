@@ -29,7 +29,7 @@ Ahmed ELbehiry
 > Requirements: Python ≥3.10, Rust toolchain (for `ezkl`), make, git. Linux/macOS preferred.
 
 ```bash
-git clone https://github.com/<org>/ppml-zk && cd ppml-zk
+git clone https://github.com/Immortal-ibr/Verifiable-Federated-Training-with-Zero-Knowledge-Proofs-ZK-FL- && cd ppml-zk
 ./scripts/dev_setup.sh           # creates .venv, installs deps, builds/installs ezkl if needed
 source .venv/bin/activate
 
