@@ -1,7 +1,7 @@
 # Verifiable Federated Training with Zero-Knowledge (ZK-FL)
 Members :
-Tarek Ibrahim
-Zeyad ElShafey
+Tarek Ibrahim |
+Zeyad ElShafey |
 Ahmed ELbehiry
 
 **Goal.** Train one model across organizations **A/B/C** without sharing raw data, while publishing **zero-knowledge proofs** that:
