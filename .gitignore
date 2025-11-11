@@ -29,3 +29,34 @@ game28.dta
 
 # Log files
 warnings.log
+
+# Node.js dependencies
+node_modules/
+package-lock.json
+
+# Build artifacts
+build/
+dist/
+*.r1cs
+*.wasm
+*.wtns
+*.zkey
+*.sym
+
+# Powers of tau files (large ceremony files)
+*.ptau
+
+# Generated proofs
+proof.json
+public.json
+witness.wtns
+vkey.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
