@@ -244,8 +244,9 @@ Auditor verifies through computation:
     - Gradient computation is correct
     - Clipping is correct
     - Weight update is correct
+```
 
-Circuit constraints:
+**Circuit Constraints:**
 ```circom
 // Gradient computation (simplified)
 var gradient[MODEL_DIM];
