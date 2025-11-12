@@ -369,8 +369,9 @@ Auditor verifies:
       - Proof fails immediately
     
     Result: Hospital cannot lie about gradient between components
+```
 
-Circuit constraint:
+**Circuit Constraints:**
 ```circom
 // Commitment verification
 var computed_commitment = PoseidonHash([weights, gradient]);
@@ -394,8 +395,9 @@ Auditor verifies:
     - Component B proved this when training
     - If hospital lies here, proof fails
     - Gradient must use same clipping as training
+```
 
-Circuit constraint:
+**Circuit Constraints:**
 ```circom
 // Norm computation
 var norm_squared = 0;
@@ -429,8 +431,8 @@ Auditor verifies (Zero-Knowledge):
     Hospital: "OK, I'll create a proof P"
     Auditor:  "I'll verify P using only: m, commitment, P"
     Result: Auditor convinced without seeing k
-
-Circuit constraint:
+```
+**Circuit Constraints:**
 ```circom
 // PRF verification
 var prf_output = PoseidonHash([shared_key]);
@@ -484,8 +486,8 @@ Auditor verifies:
   
   This is trivial to verify:
     u' - u == m (element-wise)
-
-Circuit constraint:
+```
+**Circuit Constraints:**
 ```circom
 // Masking verification (simple arithmetic)
 for (var i = 0; i < DIM; i++) {
@@ -540,7 +542,8 @@ Why this matters:
     - Server removes mask properly
     - Aggregation works correctly
 
-Circuit constraint (simplified):
+```
+**Circuit constraint (simplified):**
 ```circom
 // Verify that mask is derivable from PRF structure
 // (not a generic random mask)
