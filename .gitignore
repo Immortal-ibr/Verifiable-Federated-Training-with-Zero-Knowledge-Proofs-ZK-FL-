@@ -2,6 +2,9 @@
 _Debug/
 Compiled/
 
+#circom
+circom/
+
 # AudioCache can be rebuilt from sources
 AudioCache/
 

@@ -2,7 +2,7 @@
 
 ## Step 1: Install Dependencies
 ```bash
-cd "/Users/ahmedelbehiry/Documents/Applied Cryotography/Verifiable-Federated-Training-with-Zero-Knowledge-Proofs-ZK-FL-"
+cd "Verifiable-Federated-Training-with-Zero-Knowledge-Proofs-ZK-FL-"
 npm install
 ```
 

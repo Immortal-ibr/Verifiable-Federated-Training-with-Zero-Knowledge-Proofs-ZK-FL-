@@ -288,7 +288,7 @@ component main {public [client_id, root, N_public, c0, c1]} = BalanceProof(256, 
 
 ```bash
 # Navigate to project root
-cd "/Users/ahmedelbehiry/Documents/Applied Cryotography/Verifiable-Federated-Training-with-Zero-Knowledge-Proofs-ZK-FL-"
+cd "Verifiable-Federated-Training-with-Zero-Knowledge-Proofs-ZK-FL-"
 
 # Create build directory
 mkdir -p build/balance
