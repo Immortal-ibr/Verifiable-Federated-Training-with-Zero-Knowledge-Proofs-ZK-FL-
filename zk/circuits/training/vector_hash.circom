@@ -1,6 +1,6 @@
 pragma circom 2.0.0;
 
-include "../balance/poseidon.circom";
+include "../lib/poseidon.circom";
 
 /*
  * Vector Hashing Library
@@ -58,7 +58,7 @@ template VectorHash(DIM) {
         for (var i = 0; i < DIM; i++) {
             hasher.inputs[i] <== values[i];
         }
-        hash <== hasher.out;
+        hash <== hasher.hash;
     } else {
         // Large vector: hash in chunks, then hash the chunk hashes
         signal chunkHashes[NUM_CHUNKS];
@@ -76,7 +76,7 @@ template VectorHash(DIM) {
             for (var i = 0; i < chunkLen; i++) {
                 chunkHasher[c].inputs[i] <== values[startIdx + i];
             }
-            chunkHashes[c] <== chunkHasher[c].out;
+            chunkHashes[c] <== chunkHasher[c].hash;
         }
         
         // Hash all chunk hashes together
@@ -84,7 +84,7 @@ template VectorHash(DIM) {
         for (var c = 0; c < NUM_CHUNKS; c++) {
             finalHasher.inputs[c] <== chunkHashes[c];
         }
-        hash <== finalHasher.out;
+        hash <== finalHasher.hash;
     }
 }
 
@@ -132,7 +132,7 @@ template BatchHash(N, DIM) {
     for (var i = 0; i < N; i++) {
         batchHasher.inputs[i] <== vectorHashes[i];
     }
-    hash <== batchHasher.out;
+    hash <== batchHasher.hash;
 }
 
 /*
@@ -165,7 +165,7 @@ template SampleHash(DIM) {
     }
     hasher.inputs[DIM] <== label;
     
-    hash <== hasher.out;
+    hash <== hasher.hash;
 }
 
 /*
@@ -206,15 +206,15 @@ template GradientCommitment(DIM) {
     
     // Combine gradient hash with metadata
     component finalHash = PoseidonHash2();
-    finalHash.in1 <== gradHash.hash;
+    finalHash.left <== gradHash.hash;
     
     // Combine client_id and round into one value
     component metaHash = PoseidonHash2();
-    metaHash.in1 <== client_id;
-    metaHash.in2 <== round;
+    metaHash.left <== client_id;
+    metaHash.right <== round;
     
-    finalHash.in2 <== metaHash.out;
-    commitment <== finalHash.out;
+    finalHash.right <== metaHash.hash;
+    commitment <== finalHash.hash;
 }
 
 /*
@@ -248,8 +248,8 @@ template WeightCommitment(DIM) {
     
     // Combine with version
     component finalHash = PoseidonHash2();
-    finalHash.in1 <== weightHash.hash;
-    finalHash.in2 <== version;
+    finalHash.left <== weightHash.hash;
+    finalHash.right <== version;
     
-    commitment <== finalHash.out;
+    commitment <== finalHash.hash;
 }

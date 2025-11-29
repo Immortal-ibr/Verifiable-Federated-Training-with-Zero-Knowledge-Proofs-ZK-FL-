@@ -2,7 +2,7 @@ pragma circom 2.0.0;
 
 include "./fixedpoint.circom";
 include "./vector_hash.circom";
-include "./merkle.circom";
+include "../lib/merkle.circom";
 
 /*
  * Component B: Training Integrity Proof
@@ -305,14 +305,14 @@ template BatchGradient(BATCH_SIZE, DIM, PRECISION) {
     
     // Average gradients across batch
     signal gradientSums[DIM];
+    signal partialSums[DIM][BATCH_SIZE];
     for (var j = 0; j < DIM; j++) {
-        signal partialSums[BATCH_SIZE];
-        partialSums[0] <== sampleGradients[0][j];
+        partialSums[j][0] <== sampleGradients[0][j];
         
         for (var i = 1; i < BATCH_SIZE; i++) {
-            partialSums[i] <== partialSums[i-1] + sampleGradients[i][j];
+            partialSums[j][i] <== partialSums[j][i-1] + sampleGradients[i][j];
         }
-        gradientSums[j] <== partialSums[BATCH_SIZE-1];
+        gradientSums[j] <== partialSums[j][BATCH_SIZE-1];
     }
     
     // Divide by batch size
@@ -387,7 +387,7 @@ template TrainingStep(BATCH_SIZE, MODEL_DIM, DEPTH, PRECISION) {
         }
         leafHash[i].values[MODEL_DIM] <== labels[i];
         
-        batchVerifier.leaves[i] <== leafHash[i].hash;
+        batchVerifier.values[i] <== leafHash[i].hash;
         for (var j = 0; j < DEPTH; j++) {
             batchVerifier.siblings[i][j] <== siblings[i][j];
             batchVerifier.pathIndices[i][j] <== pathIndices[i][j];

@@ -55,16 +55,19 @@ template FixedPointMul(PRECISION) {
     product <== a * b;
     
     // Divide by PRECISION to maintain scale
-    // Note: Integer division in field arithmetic
-    result <== product \ PRECISION;
+    // Use hint for division, then verify with constraints
+    result <-- product / PRECISION;
     
-    // Verify the division was exact (remainder check)
+    // Verify the division: product = result * PRECISION + remainder
     signal remainder;
-    remainder <== product - (result * PRECISION);
+    remainder <-- product % PRECISION;
+    product === result * PRECISION + remainder;
     
-    // In a perfect world remainder should be 0, but due to field arithmetic
-    // we just constrain it to be small (less than PRECISION)
-    // This is safe because we're working with approximate arithmetic anyway
+    // Constrain remainder to be less than PRECISION
+    component rangeCheck = LessThan(252);
+    rangeCheck.in[0] <== remainder;
+    rangeCheck.in[1] <== PRECISION;
+    rangeCheck.out === 1;
 }
 
 /*
@@ -101,12 +104,19 @@ template FixedPointDiv(PRECISION) {
     signal scaledA;
     scaledA <== a * PRECISION;
     
-    // Divide
-    result <== scaledA \ b;
+    // Divide using hint and constraints
+    result <-- scaledA / b;
     
-    // Verify division
+    // Verify division: scaledA = result * b + remainder
     signal remainder;
-    remainder <== scaledA - (result * b);
+    remainder <-- scaledA % b;
+    scaledA === result * b + remainder;
+    
+    // Verify remainder is less than b
+    component remainderCheck = LessThan(252);
+    remainderCheck.in[0] <== remainder;
+    remainderCheck.in[1] <== b;
+    remainderCheck.out === 1;
     
     // Constrain b to be non-zero by checking b * b_inv = 1
     // where b_inv is the multiplicative inverse
