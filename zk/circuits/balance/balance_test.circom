@@ -1,6 +1,6 @@
 pragma circom 2.0.0;
 
-include "./merkle.circom";
+include "../lib/merkle.circom";
 
 /*
  * Simple Test Version of BalanceProof
@@ -8,6 +8,7 @@ include "./merkle.circom";
  */
 template BalanceProofTest(N, DEPTH) {
     // PUBLIC INPUTS
+    signal input client_id;  // Added for consistency
     signal input root;
     signal input N_public;
     signal input c0;
@@ -51,9 +52,7 @@ template BalanceProofTest(N, DEPTH) {
     }
 }
 
-// Small test: 8 items, depth 3 (2^3 = 8)
-include "./balance.circom";
-
 // Small test circuit for faster compilation/testing
 // Uses 8 items with depth 3 (2^3 = 8)
-component main {public [client_id, root, N_public, c0, c1]} = BalanceProof(8, 3);
+component main {public [client_id, root, N_public, c0, c1]} = BalanceProofTest(8, 3);
+

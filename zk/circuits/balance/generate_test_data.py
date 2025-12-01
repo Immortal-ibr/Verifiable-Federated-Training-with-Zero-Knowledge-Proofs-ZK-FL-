@@ -4,13 +4,7 @@ Test data generator for Component A - Balance Proof
 Creates a small dataset with Merkle tree for testing
 """
 
-impo    # Create input JSON for the circuit
-    circuit_input = {
-        "client_id": str(1),  # Client 1 (for multi-client federation)
-        "root": str(root),
-        "N_public": str(N),
-        "c0": str(c0),
-        "c1": str(c1),port hashlib
+import json
 from typing import List, Tuple
 
 def poseidon_mock(inputs: List[int]) -> int:
@@ -146,6 +140,7 @@ def generate_test_data():
     
     # Create input JSON for circuit
     circuit_input = {
+        "client_id": str(1),  # Client 1 (for multi-client federation)
         "root": str(tree.root),
         "N_public": str(len(labels)),
         "c0": str(labels.count(0)),
@@ -162,6 +157,7 @@ def generate_test_data():
     
     print(f"\n✅ Test input saved to: {output_file}")
     print(f"\nPublic inputs:")
+    print(f"  client_id: {circuit_input['client_id']}")
     print(f"  root: {circuit_input['root']}")
     print(f"  N_public: {circuit_input['N_public']}")
     print(f"  c0: {circuit_input['c0']}")
