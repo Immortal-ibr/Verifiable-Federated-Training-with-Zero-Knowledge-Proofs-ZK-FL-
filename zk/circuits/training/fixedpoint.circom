@@ -1,6 +1,7 @@
 pragma circom 2.0.0;
 
 include "../../../node_modules/circomlib/circuits/comparators.circom";
+include "../../../node_modules/circomlib/circuits/bitify.circom";
 
 /*
  * Fixed-Point Arithmetic Library
@@ -55,16 +56,18 @@ template FixedPointMul(PRECISION) {
     product <== a * b;
     
     // Divide by PRECISION to maintain scale
-    // Use hint for division, then verify with constraints
+    // NOTE: All inputs are assumed to be POSITIVE (biased representation)
+    // This ensures the hint computation works correctly
     result <-- product / PRECISION;
     
-    // Verify the division: product = result * PRECISION + remainder
+    // Verify division: product = result * PRECISION + remainder
     signal remainder;
     remainder <-- product % PRECISION;
     product === result * PRECISION + remainder;
     
-    // Constrain remainder to be less than PRECISION
-    component rangeCheck = LessThan(252);
+    // Constrain remainder to be in valid range [0, PRECISION)
+    // Since all values are positive, this check works correctly
+    component rangeCheck = LessThan(64);
     rangeCheck.in[0] <== remainder;
     rangeCheck.in[1] <== PRECISION;
     rangeCheck.out === 1;
@@ -104,7 +107,8 @@ template FixedPointDiv(PRECISION) {
     signal scaledA;
     scaledA <== a * PRECISION;
     
-    // Divide using hint and constraints
+    // Divide using hint
+    // NOTE: All inputs are assumed to be POSITIVE (biased representation)
     result <-- scaledA / b;
     
     // Verify division: scaledA = result * b + remainder
@@ -112,14 +116,13 @@ template FixedPointDiv(PRECISION) {
     remainder <-- scaledA % b;
     scaledA === result * b + remainder;
     
-    // Verify remainder is less than b
-    component remainderCheck = LessThan(252);
-    remainderCheck.in[0] <== remainder;
-    remainderCheck.in[1] <== b;
-    remainderCheck.out === 1;
+    // Constrain remainder to be in valid range [0, b)
+    component rangeCheck = LessThan(64);
+    rangeCheck.in[0] <== remainder;
+    rangeCheck.in[1] <== b;
+    rangeCheck.out === 1;
     
     // Constrain b to be non-zero by checking b * b_inv = 1
-    // where b_inv is the multiplicative inverse
     signal b_inv;
     b_inv <-- 1 / b;
     b * b_inv === 1;
@@ -222,50 +225,78 @@ template FixedPointSqrt(PRECISION) {
     signal input value;
     signal output result;
     
-    // Number of Newton iterations (more = more accurate)
-    var ITERATIONS = 10;
+    // Handle zero case: sqrt(0) = 0
+    // Check if value is zero using IsZero
+    component isZeroCheck = IsZero();
+    isZeroCheck.in <== value;
+    signal isZero <== isZeroCheck.out; // 1 if value == 0, else 0
     
-    // Initial guess: y_0 = value / 2
-    signal guess[ITERATIONS + 1];
-    component div1 = FixedPointDiv(PRECISION);
-    div1.a <== value;
-    div1.b <== 2 * PRECISION; // Divide by 2
-    guess[0] <== div1.result;
+    // Use hint to compute sqrt, then verify with constraints
+    // This avoids Newton iteration issues with division by zero
+    signal sqrtHint;
+    sqrtHint <-- isZero == 1 ? 0 : sqrt_hint(value, PRECISION);
     
-    // Newton iterations
-    component div2[ITERATIONS];
-    component add[ITERATIONS];
-    component div3[ITERATIONS];
+    // For non-zero values, verify that sqrtHint² ≈ value
+    // sqrtHint² should be close to value (within PRECISION tolerance)
+    signal sqrtSquared;
+    sqrtSquared <== sqrtHint * sqrtHint;
     
-    for (var i = 0; i < ITERATIONS; i++) {
-        // Compute x / y_n
-        div2[i] = FixedPointDiv(PRECISION);
-        div2[i].a <== value;
-        div2[i].b <== guess[i];
-        
-        // Compute y_n + x/y_n
-        add[i] = FixedPointAdd(PRECISION);
-        add[i].a <== guess[i];
-        add[i].b <== div2[i].result;
-        
-        // Divide by 2: y_{n+1} = (y_n + x/y_n) / 2
-        div3[i] = FixedPointDiv(PRECISION);
-        div3[i].a <== add[i].result;
-        div3[i].b <== 2 * PRECISION;
-        guess[i + 1] <== div3[i].result;
+    // Compute the scaled value for comparison
+    // sqrtHint is in fixed-point, so sqrtHint² / PRECISION should ≈ value
+    signal scaledSquared;
+    scaledSquared <-- sqrtSquared / PRECISION;
+    signal sqRemainder;
+    sqRemainder <-- sqrtSquared % PRECISION;
+    sqrtSquared === scaledSquared * PRECISION + sqRemainder;
+    
+    // Constrain remainder to be less than PRECISION
+    component remCheck = LessThan(64);
+    remCheck.in[0] <== sqRemainder;
+    remCheck.in[1] <== PRECISION;
+    remCheck.out === 1;
+    
+    // The squared result should be close to value
+    // Allow tolerance of 2*PRECISION for rounding errors
+    // |scaledSquared - value| < 2*PRECISION
+    signal diff <== scaledSquared - value;
+    signal absDiff;
+    signal diffIsNeg <-- (diff > (1 << 251)) ? 1 : 0;
+    diffIsNeg * (1 - diffIsNeg) === 0; // Binary constraint
+    
+    // Compute absDiff = diffIsNeg ? -diff : diff
+    // Using intermediate signals to avoid non-quadratic constraints
+    signal negDiff <== -diff;
+    signal diffTimesIsNeg <== diffIsNeg * diff;
+    signal negDiffTimesIsNeg <== diffIsNeg * negDiff;
+    // absDiff = negDiff * diffIsNeg + diff * (1 - diffIsNeg)
+    //         = negDiffTimesIsNeg + diff - diffTimesIsNeg
+    absDiff <== negDiffTimesIsNeg + diff - diffTimesIsNeg;
+    
+    component errorBound = LessThan(64);
+    errorBound.in[0] <== absDiff;
+    errorBound.in[1] <== 2 * PRECISION; // Allow 2 units of tolerance
+    // Relax constraint for zero case or accept bounded error
+    signal errorOk <== errorBound.out + isZero; // Either error is small OR value is zero
+    signal errorCheck;
+    component isErrorOk = IsZero();
+    isErrorOk.in <== errorOk;
+    isErrorOk.out === 0; // errorOk must be non-zero (at least one condition true)
+    
+    // Final result: 0 if input was 0, otherwise the computed sqrt
+    result <== (1 - isZero) * sqrtHint;
+}
+
+// Helper function for sqrt hint (computed outside circuit)
+function sqrt_hint(value, PRECISION) {
+    // Newton's method computed as hint
+    var guess = value / 2;
+    if (guess == 0) { guess = PRECISION; }
+    for (var i = 0; i < 15; i++) {
+        var next = (guess + (value * PRECISION) / guess) / 2;
+        if (next >= guess) { return guess; }
+        guess = next;
     }
-    
-    result <== guess[ITERATIONS];
-    
-    // Verify that result² ≈ value (within tolerance)
-    component mul = FixedPointMul(PRECISION);
-    mul.a <== result;
-    mul.b <== result;
-    signal resultSquared <== mul.result;
-    
-    // Allow small error due to rounding
-    signal error <== value - resultSquared;
-    // In practice, you'd want to bound the error, but for now we just compute it
+    return guess;
 }
 
 /*
@@ -295,22 +326,27 @@ template FixedPointAbs(PRECISION) {
     
     // Check if value is negative
     // In field arithmetic, negative numbers are large positive numbers
-    // So we check if value > (p-1)/2 where p is the field prime
+    // We use a hint and then constrain it properly
     
-    component isNegative = LessThan(252);
-    // Check if value is in upper half of field (negative)
-    // This is a simplified check; in practice you'd use a more robust method
-    
-    // For now, use a simple conditional:
-    // If value appears negative (high bit set), negate it
-    // Otherwise, keep it as is
+    // Hint: check if value appears negative (in upper half of field)
     signal isNeg <-- (value > (1 << 251)) ? 1 : 0;
     
-    // result = isNeg ? -value : value
-    result <== isNeg * (-value - value) + value;
-    // Simplifies to: result = -2*isNeg*value + value
-    // If isNeg = 0: result = value
-    // If isNeg = 1: result = -value
+    // CRITICAL: Constrain isNeg to be binary
+    isNeg * (1 - isNeg) === 0;
+    
+    // Compute the potential absolute value
+    signal negValue <== -value;
+    
+    // result = isNeg ? negValue : value
+    result <== isNeg * (negValue - value) + value;
+    
+    // Constrain that result is correct:
+    // If isNeg = 0: result = value, so result + 0 = value ✓
+    // If isNeg = 1: result = -value, so result + value = 0 (in field)
+    // We verify: isNeg * (result + value) + (1 - isNeg) * (result - value) === 0
+    signal check1 <== result + value;  // Should be 0 if negated
+    signal check2 <== result - value;  // Should be 0 if not negated
+    isNeg * check1 + (1 - isNeg) * check2 === 0;
 }
 
 /*

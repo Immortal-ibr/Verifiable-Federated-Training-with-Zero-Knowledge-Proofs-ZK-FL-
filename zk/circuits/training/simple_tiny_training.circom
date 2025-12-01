@@ -20,16 +20,12 @@ template SimpleTinyTraining(BATCH_SIZE, MODEL_DIM, DEPTH) {
     signal input pathIndices[BATCH_SIZE][DEPTH];
     
     // Verify batch from Merkle tree
+    // BatchMerkleProof hashes values internally, so pass raw labels
     component batchVerifier = BatchMerkleProof(BATCH_SIZE, DEPTH);
     batchVerifier.root <== root_D;
     
-    // Simple hash: just hash the label (ultra simple for testing!)
-    component leafHash[BATCH_SIZE];
     for (var i = 0; i < BATCH_SIZE; i++) {
-        leafHash[i] = PoseidonHash1();
-        leafHash[i].value <== labels[i];
-        
-        batchVerifier.values[i] <== leafHash[i].hash;
+        batchVerifier.values[i] <== labels[i];
         for (var j = 0; j < DEPTH; j++) {
             batchVerifier.siblings[i][j] <== siblings[i][j];
             batchVerifier.pathIndices[i][j] <== pathIndices[i][j];
