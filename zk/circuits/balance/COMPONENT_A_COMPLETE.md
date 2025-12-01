@@ -1,6 +1,5 @@
 # 🎉 Component A - COMPLETE! 🎉
 
-**Team:** Ahmed Elbehiry, Tarek Salama, Zeyad Elshafey  
 **Date:** November 30, 2025  
 **Component:** Dataset Balance Proof (ZK-FL Component A)  
 **Status:** ✅ **100% COMPLETE & VERIFIED**
@@ -227,25 +226,6 @@ npx snarkjs groth16 verify \
 ```
 
 Expected output: `[INFO]  snarkJS: OK!`
-
----
-
-## 🙏 Acknowledgments
-
-**Team Members:**
-- **Ahmed Elbehiry** - Component A lead, circuit design, testing
-- **Tarek Salama** - Components B & C, integration
-- **Zeyad Elshafey** - Components B & C, system architecture
-
-**Technologies:**
-- Circom 2.0 - Circuit compiler
-- snarkjs - Proof generation toolkit
-- circomlib - Poseidon hash implementation
-- Groth16 - ZK-SNARK protocol
-
-**Course:**
-- Applied Cryptography, Purdue University
-- Fall 2025
 
 ---
 
