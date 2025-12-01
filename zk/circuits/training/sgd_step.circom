@@ -375,7 +375,7 @@ template TrainingStep(BATCH_SIZE, MODEL_DIM, DEPTH, PRECISION) {
     // =============== STEP 1: VERIFY BATCH MEMBERSHIP ===============
     // Prove that all samples in the batch come from the committed dataset
     
-    component batchVerifier = BatchMerkleProof(BATCH_SIZE, DEPTH);
+    component batchVerifier = BatchMerkleProofPreHashed(BATCH_SIZE, DEPTH);
     batchVerifier.root <== root_D;
     
     // Hash each (feature, label) pair to get leaf
@@ -387,7 +387,7 @@ template TrainingStep(BATCH_SIZE, MODEL_DIM, DEPTH, PRECISION) {
         }
         leafHash[i].values[MODEL_DIM] <== labels[i];
         
-        batchVerifier.values[i] <== leafHash[i].hash;
+        batchVerifier.leafHashes[i] <== leafHash[i].hash;  // Pre-hashed!
         for (var j = 0; j < DEPTH; j++) {
             batchVerifier.siblings[i][j] <== siblings[i][j];
             batchVerifier.pathIndices[i][j] <== pathIndices[i][j];
@@ -478,4 +478,4 @@ template TrainingStep(BATCH_SIZE, MODEL_DIM, DEPTH, PRECISION) {
 //   - DEPTH: Merkle tree depth (e.g., 7 for up to 128 samples)
 //   - PRECISION: fixed-point multiplier (e.g., 1000 for 3 decimals)
 
-component main {public [client_id, root_D, root_G, alpha, tau]} = TrainingStep(8, 32, 7, 1000);
+component main {public [client_id, root_D, root_G, alpha, tau]} = TrainingStep(8, 16, 7, 1000);
