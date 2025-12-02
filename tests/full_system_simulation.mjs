@@ -46,6 +46,9 @@ const CONFIG = {
     BATCH_SIZE: 8,           // Training batch size
     TAU_SQUARED: 10000,      // Gradient clipping threshold
     
+    // Training round (for multi-round FL)
+    CURRENT_ROUND: 1,
+    
     // Learning parameters
     LEARNING_RATE: 0.01,
     
@@ -146,6 +149,15 @@ function vectorHash(values) {
         }
         return F.toObject(poseidon(chunkHashes));
     }
+}
+
+// GradientCommitment: Poseidon(VectorHash(gradient), Poseidon(client_id, round))
+// This matches the circuit's GradientCommitment template
+function gradientCommitment(gradientFieldValues, clientId, round) {
+    const gradHash = vectorHash(gradientFieldValues);
+    const metaHash = F.toObject(poseidon([BigInt(clientId), BigInt(round)]));
+    const commitment = F.toObject(poseidon([BigInt(gradHash), BigInt(metaHash)]));
+    return commitment;
 }
 
 function buildMerkleTree(leafHashes, depth) {
@@ -396,11 +408,12 @@ class Client {
             printInfo('Gradient clipped');
         }
         
-        // Compute gradient commitment
+        // Compute gradient commitment using GradientCommitment(gradient, client_id, round)
         const gradientField = gradient.map(g => g >= 0 ? BigInt(g) : CONFIG.FIELD_PRIME + BigInt(g));
-        this.root_G = vectorHash(gradientField);
+        this.root_G = gradientCommitment(gradientField, this.clientId, CONFIG.CURRENT_ROUND);
         this.gradient = gradient;
         
+        printInfo(`round = ${CONFIG.CURRENT_ROUND}`);
         printInfo(`root_G = ${this.root_G.toString().slice(0, 20)}...`);
         
         // Generate training proof
@@ -417,6 +430,7 @@ class Client {
         
         const input = {
             client_id: this.clientId.toString(),
+            round: CONFIG.CURRENT_ROUND.toString(),
             root_D: this.root_D.toString(),
             root_G: this.root_G.toString(),
             tauSquared: CONFIG.TAU_SQUARED.toString(),
@@ -452,6 +466,7 @@ class Client {
             publicSignals: proofResult.publicSignals,
             root_D: this.root_D.toString(),
             root_G: this.root_G.toString(),
+            round: CONFIG.CURRENT_ROUND,
             // In real system, gradient would be encrypted for secure aggregation
             // For now, we send it in the clear
             gradient: gradient
@@ -672,8 +687,11 @@ class Server {
     // Phase 4: Verify training proof and check binding
     // ─────────────────────────────────────────────────────────────────────
     async verifyTrainingProof(updatePackage) {
-        const { clientId, proof, publicSignals, root_D, root_G, gradient } = updatePackage;
+        const { clientId, proof, publicSignals, root_D, root_G, round, gradient } = updatePackage;
         printServer(`Verifying training proof from client ${clientId}...`);
+        
+        // Public signal order: [client_id, round, root_D, root_G, tauSquared]
+        //                       index: 0      1      2       3       4
         
         // 1. CRITICAL: Check that root_D matches the one from balance proof
         const balanceProof = this.balanceProofs.get(clientId);
@@ -694,13 +712,30 @@ class Server {
         this.verificationResults.binding.set(clientId, true);
         printSuccess('Binding check PASSED: root_D matches balance proof');
         
-        // 2. Verify root_D in public signals
-        const claimedRootD = publicSignals[1];
+        // 2. Verify public signals match claimed values
+        const claimedRootD = publicSignals[2];  // index 2 = root_D
+        const claimedRootG = publicSignals[3];  // index 3 = root_G
+        const claimedRound = publicSignals[1];  // index 1 = round
+        
         if (claimedRootD !== root_D) {
             printError('root_D mismatch in training public signals!');
             this.verificationResults.training.set(clientId, false);
             return false;
         }
+        
+        if (claimedRootG !== root_G) {
+            printError('root_G mismatch in training public signals!');
+            this.verificationResults.training.set(clientId, false);
+            return false;
+        }
+        
+        if (claimedRound !== round.toString()) {
+            printError('round mismatch in training public signals!');
+            this.verificationResults.training.set(clientId, false);
+            return false;
+        }
+        
+        printSuccess('Public signals verified: root_D, root_G, round match');
         
         // 3. Verify ZK proof
         const vkeyPath = path.join(CONFIG.TRAINING_DIR, 'sgd_step_quick_vkey.json');

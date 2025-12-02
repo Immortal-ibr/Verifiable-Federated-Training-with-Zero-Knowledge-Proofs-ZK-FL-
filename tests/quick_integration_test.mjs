@@ -38,6 +38,10 @@ const CONFIG = {
     BATCH_SIZE: 8,           // Use all samples
     TAU_SQUARED: 10000,      // Clipping threshold
     
+    // Protocol parameters
+    CLIENT_ID: 1,            // Client identifier
+    ROUND: 1,                // Training round number
+    
     // Paths
     BALANCE_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'balance'),
     TRAINING_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'training'),
@@ -224,8 +228,11 @@ function generateGradient() {
     
     const normSquared = gradient.reduce((sum, g) => sum + g * g, 0);
     
+    // Compute GradientCommitment = Poseidon(VectorHash(gradient), Poseidon(client_id, round))
     const gradientField = gradient.map(g => g >= 0 ? BigInt(g) : CONFIG.FIELD_PRIME + BigInt(g));
-    const root_G = vectorHash(gradientField);
+    const gradHash = vectorHash(gradientField);
+    const metaHash = F.toObject(poseidon([BigInt(CONFIG.CLIENT_ID), BigInt(CONFIG.ROUND)]));
+    const root_G = F.toObject(poseidon([BigInt(gradHash), BigInt(metaHash)]));
     
     printSuccess(`||gradient||² = ${normSquared} ≤ τ² = ${CONFIG.TAU_SQUARED}`);
     return { gradient, gradPos, gradNeg, normSquared, root_G };
@@ -279,7 +286,8 @@ function generateTrainingInput(features, labels, tree, root, gradPos, gradNeg, r
     }
     
     const input = {
-        client_id: "1",
+        client_id: CONFIG.CLIENT_ID.toString(),
+        round: CONFIG.ROUND.toString(),
         root_D: root.toString(),
         root_G: root_G.toString(),
         tauSquared: CONFIG.TAU_SQUARED.toString(),
@@ -469,109 +477,7 @@ async function main() {
             process.exit(1);
         }
         
-        // Create matching training circuit for small test
-        const trainingCircuitPath = path.join(CONFIG.TRAINING_DIR, 'sgd_step_quick.circom');
-        if (!fs.existsSync(trainingCircuitPath)) {
-            const circuitContent = `pragma circom 2.0.0;
-
-include "./vector_hash.circom";
-include "../lib/merkle.circom";
-include "../../../node_modules/circomlib/circuits/comparators.circom";
-
-template VerifyClippingSound(DIM) {
-    signal input gradPos[DIM];
-    signal input gradNeg[DIM];
-    signal input tauSquared;
-    
-    signal output gradient[DIM];
-    signal output normSquared;
-    signal output valid;
-    
-    for (var j = 0; j < DIM; j++) {
-        gradPos[j] * gradNeg[j] === 0;
-    }
-    
-    signal posSquared[DIM];
-    signal negSquared[DIM];
-    signal componentNormSq[DIM];
-    signal partialNorm[DIM + 1];
-    
-    partialNorm[0] <== 0;
-    
-    for (var j = 0; j < DIM; j++) {
-        posSquared[j] <== gradPos[j] * gradPos[j];
-        negSquared[j] <== gradNeg[j] * gradNeg[j];
-        componentNormSq[j] <== posSquared[j] + negSquared[j];
-        partialNorm[j + 1] <== partialNorm[j] + componentNormSq[j];
-    }
-    
-    normSquared <== partialNorm[DIM];
-    
-    component lt = LessThan(64);
-    lt.in[0] <== normSquared;
-    lt.in[1] <== tauSquared + 1;
-    valid <== lt.out;
-    
-    for (var j = 0; j < DIM; j++) {
-        gradient[j] <== gradPos[j] - gradNeg[j];
-    }
-}
-
-template TrainingStepQuick(BATCH_SIZE, MODEL_DIM, DEPTH) {
-    signal input client_id;
-    signal input root_D;
-    signal input root_G;
-    signal input tauSquared;
-    
-    signal input gradPos[MODEL_DIM];
-    signal input gradNeg[MODEL_DIM];
-    signal input features[BATCH_SIZE][MODEL_DIM];
-    signal input labels[BATCH_SIZE];
-    signal input siblings[BATCH_SIZE][DEPTH];
-    signal input pathIndices[BATCH_SIZE][DEPTH];
-    
-    component batchVerifier = BatchMerkleProofPreHashed(BATCH_SIZE, DEPTH);
-    batchVerifier.root <== root_D;
-    
-    component leafHash[BATCH_SIZE];
-    for (var i = 0; i < BATCH_SIZE; i++) {
-        leafHash[i] = VectorHash(MODEL_DIM + 1);
-        for (var j = 0; j < MODEL_DIM; j++) {
-            leafHash[i].values[j] <== features[i][j];
-        }
-        leafHash[i].values[MODEL_DIM] <== labels[i];
-        
-        batchVerifier.leafHashes[i] <== leafHash[i].hash;
-        for (var j = 0; j < DEPTH; j++) {
-            batchVerifier.siblings[i][j] <== siblings[i][j];
-            batchVerifier.pathIndices[i][j] <== pathIndices[i][j];
-        }
-    }
-    
-    component clipVerifier = VerifyClippingSound(MODEL_DIM);
-    for (var j = 0; j < MODEL_DIM; j++) {
-        clipVerifier.gradPos[j] <== gradPos[j];
-        clipVerifier.gradNeg[j] <== gradNeg[j];
-    }
-    clipVerifier.tauSquared <== tauSquared;
-    clipVerifier.valid === 1;
-    
-    component gradHash = VectorHash(MODEL_DIM);
-    for (var j = 0; j < MODEL_DIM; j++) {
-        gradHash.values[j] <== clipVerifier.gradient[j];
-    }
-    root_G === gradHash.hash;
-    
-    signal clientCheck;
-    clientCheck <== client_id * 0;
-}
-
-component main {public [client_id, root_D, root_G, tauSquared]} = TrainingStepQuick(8, 4, 3);
-`;
-            fs.writeFileSync(trainingCircuitPath, circuitContent);
-            printInfo('Created quick training circuit');
-        }
-        
+        // Run training proof using sgd_step_quick (now with round and GradientCommitment)
         const trainingPublic = await runProofWorkflow(CONFIG.TRAINING_DIR, 'sgd_step_quick', trainingInput, '6b');
         if (!trainingPublic) {
             printError('Training proof failed!');
@@ -581,11 +487,15 @@ component main {public [client_id, root_D, root_G, tauSquared]} = TrainingStepQu
         // Verify binding
         printHeader('VERIFYING BINDING');
         
-        const balanceRoot = balancePublic[1];
-        const trainingRoot = trainingPublic[1];
+        // Balance public signals: [client_id, root, N_public, c0, c1]
+        // Training public signals: [client_id, round, root_D, root_G, tauSquared]
+        const balanceRoot = balancePublic[1];    // index 1 = root
+        const trainingRoot = trainingPublic[2];  // index 2 = root_D (after round)
+        const trainingRootG = trainingPublic[3]; // index 3 = root_G
         
-        printInfo(`Balance root:  ${balanceRoot.slice(0, 30)}...`);
-        printInfo(`Training root: ${trainingRoot.slice(0, 30)}...`);
+        printInfo(`Balance root:   ${balanceRoot.slice(0, 30)}...`);
+        printInfo(`Training root_D: ${trainingRoot.slice(0, 30)}...`);
+        printInfo(`Training root_G: ${trainingRootG.slice(0, 30)}...`);
         
         if (balanceRoot === trainingRoot) {
             printSuccess('✓ root_D MATCHES - Components are cryptographically bound!');
