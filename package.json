@@ -36,6 +36,7 @@
   "license": "MIT",
   "dependencies": {
     "circomlib": "^2.0.5",
+    "circomlib-ml": "^2.3.0",
     "circomlibjs": "^0.1.7",
     "commander": "^11.1.0",
     "csv-parse": "^5.5.3",

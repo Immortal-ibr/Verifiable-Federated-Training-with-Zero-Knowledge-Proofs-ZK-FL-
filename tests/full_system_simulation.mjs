@@ -44,7 +44,8 @@ const CONFIG = {
     MODEL_DIM: 4,            // Feature dimensions  
     DEPTH: 3,                // Merkle tree depth (2^3 = 8)
     BATCH_SIZE: 8,           // Training batch size
-    TAU_SQUARED: 10000,      // Gradient clipping threshold
+    TAU_SQUARED: 100000000,  // Gradient clipping threshold (increased for verified gradient)
+    PRECISION: 1000,         // Fixed-point scaling for gradient verification
     
     // Training round (for multi-round FL)
     CURRENT_ROUND: 1,
@@ -52,9 +53,11 @@ const CONFIG = {
     // Learning parameters
     LEARNING_RATE: 0.01,
     
-    // Paths
-    BALANCE_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'balance'),
-    TRAINING_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'training'),
+    // Paths - artifacts contain compiled circuits (.r1cs, .zkey, .vkey, _js/)
+    BALANCE_DIR: path.join(__dirname, '..', 'artifacts', 'balance'),
+    TRAINING_DIR: path.join(__dirname, '..', 'artifacts', 'training'),
+    SECAGG_DIR: path.join(__dirname, '..', 'artifacts', 'secureagg'),
+    KEYS_DIR: path.join(__dirname, '..', 'artifacts', 'keys'),
     PROJECT_ROOT: path.join(__dirname, '..'),
     
     // Poseidon
@@ -160,6 +163,38 @@ function gradientCommitment(gradientFieldValues, clientId, round) {
     return commitment;
 }
 
+// WeightCommitment: VectorHash(weights)
+// This matches the circuit's WeightCommitmentSimple template
+function weightCommitment(weights) {
+    return vectorHash(weights.map(w => BigInt(w)));
+}
+
+// KeyMaterial commitment for secure aggregation
+// Matches circuit: root_K = Poseidon(master_key, shared_key_1, ..., shared_key_n)
+function keyMaterialCommitment(masterKey, peerSharedKeys) {
+    const inputs = [BigInt(masterKey), ...peerSharedKeys.map(k => BigInt(k))];
+    return F.toObject(poseidon(inputs));
+}
+
+// Derive pairwise mask using PRF with canonical ordering
+// r_ij[k] = Poseidon(K_ij, round, min(i,j), max(i,j), k)
+function derivePairwiseMask(sharedKey, round, clientId, peerId, dim) {
+    const minId = Math.min(clientId, peerId);
+    const maxId = Math.max(clientId, peerId);
+    const mask = [];
+    for (let k = 0; k < dim; k++) {
+        const hash = poseidon([
+            BigInt(sharedKey),
+            BigInt(round),
+            BigInt(minId),
+            BigInt(maxId),
+            BigInt(k)
+        ]);
+        mask.push(F.toObject(hash));
+    }
+    return mask;
+}
+
 function buildMerkleTree(leafHashes, depth) {
     const paddedN = 2 ** depth;
     const zeroHash = F.toObject(poseidon([BigInt(0)]));
@@ -212,16 +247,24 @@ class Client {
         this.privateData = null;      // Secret: actual dataset
         this.merkleTree = null;       // Secret: full tree structure
         this.gradient = null;         // Secret: computed gradient
+        this.weights = null;          // Secret: local copy of global model weights
         
         // Public commitments
         this.root_D = null;           // Public: dataset commitment
         this.root_G = null;           // Public: gradient commitment
+        this.root_W = null;           // Public: weight commitment
         this.c0 = null;               // Public: class 0 count
         this.c1 = null;               // Public: class 1 count
+        
+        // Secure aggregation state
+        this.sharedKeys = null;       // Secret: pairwise shared keys K_ij
+        this.root_K = null;           // Public: key material commitment
+        this.maskedUpdate = null;     // Public: masked gradient for aggregation
         
         // Proofs to send to server
         this.balanceProof = null;
         this.trainingProof = null;
+        this.secaggProof = null;
     }
     
     // ─────────────────────────────────────────────────────────────────────
@@ -352,39 +395,29 @@ class Client {
     }
     
     // ─────────────────────────────────────────────────────────────────────
-    // Phase 4: Local training and proof generation
+    // Phase 4: Local training with VERIFIED GRADIENT
+    // Uses sgd_verified.circom which proves gradient is correctly computed
     // ─────────────────────────────────────────────────────────────────────
     async trainAndGenerateProof(globalModel) {
-        printClient(this.clientId, 'Training locally...');
+        printClient(this.clientId, 'Training locally with VERIFIED gradient...');
         
-        // Simulate training: compute gradient
+        // Store the global model weights
+        this.weights = [...globalModel];
+        
+        // Compute gradient CORRECTLY using same formula as circuit
         const { features, labels } = this.privateData;
+        const { gradient, expectedSummedGrad, remainder } = this._computeVerifiedGradient(features, labels, this.weights);
         
-        // Simple gradient computation (simulate SGD step)
-        const gradient = [];
+        // Split gradient into positive/negative components
         const gradPos = [];
         const gradNeg = [];
-        
         for (let j = 0; j < CONFIG.MODEL_DIM; j++) {
-            // Simulate gradient based on data
-            let g = 0;
-            for (let i = 0; i < CONFIG.BATCH_SIZE; i++) {
-                const error = labels[i] - 0.5; // Simplified loss
-                g += error * features[i][j] * 0.01;
-            }
-            g = Math.round(g);
-            
-            // Vary by client
-            g += randomInt(-30, 30, this.clientId * 100 + j);
-            
-            gradient.push(g);
-            
-            if (g >= 0) {
-                gradPos.push(g);
+            if (gradient[j] >= 0) {
+                gradPos.push(gradient[j]);
                 gradNeg.push(0);
             } else {
                 gradPos.push(0);
-                gradNeg.push(-g);
+                gradNeg.push(-gradient[j]);
             }
         }
         
@@ -393,31 +426,24 @@ class Client {
         printInfo(`Gradient norm² = ${normSquared} (limit: ${CONFIG.TAU_SQUARED})`);
         
         if (normSquared > CONFIG.TAU_SQUARED) {
-            // Clip gradient
-            const scale = Math.sqrt(CONFIG.TAU_SQUARED / normSquared);
-            for (let j = 0; j < CONFIG.MODEL_DIM; j++) {
-                gradient[j] = Math.round(gradient[j] * scale);
-                if (gradient[j] >= 0) {
-                    gradPos[j] = gradient[j];
-                    gradNeg[j] = 0;
-                } else {
-                    gradPos[j] = 0;
-                    gradNeg[j] = -gradient[j];
-                }
-            }
-            printInfo('Gradient clipped');
+            printError(`Gradient norm exceeds threshold! Test data may need adjustment.`);
+            throw new Error('Gradient too large for clipping threshold');
         }
         
-        // Compute gradient commitment using GradientCommitment(gradient, client_id, round)
+        // Compute weight commitment
+        this.root_W = weightCommitment(this.weights);
+        
+        // Compute gradient commitment
         const gradientField = gradient.map(g => g >= 0 ? BigInt(g) : CONFIG.FIELD_PRIME + BigInt(g));
         this.root_G = gradientCommitment(gradientField, this.clientId, CONFIG.CURRENT_ROUND);
         this.gradient = gradient;
         
         printInfo(`round = ${CONFIG.CURRENT_ROUND}`);
         printInfo(`root_G = ${this.root_G.toString().slice(0, 20)}...`);
+        printInfo(`root_W = ${this.root_W.toString().slice(0, 20)}...`);
         
-        // Generate training proof
-        printClient(this.clientId, 'Generating training proof...');
+        // Generate training proof with VERIFIED gradient
+        printClient(this.clientId, 'Generating training proof (sgd_verified)...');
         
         const siblings = [];
         const pathIndices = [];
@@ -428,12 +454,17 @@ class Client {
             pathIndices.push(proof.pathIndices.map(p => p.toString()));
         }
         
+        // Input for sgd_verified circuit - includes weights, expectedSummedGrad, remainder
         const input = {
             client_id: this.clientId.toString(),
             round: CONFIG.CURRENT_ROUND.toString(),
             root_D: this.root_D.toString(),
             root_G: this.root_G.toString(),
+            root_W: this.root_W.toString(),
             tauSquared: CONFIG.TAU_SQUARED.toString(),
+            weights: this.weights.map(w => w.toString()),
+            expectedSummedGrad: expectedSummedGrad.map(s => s.toString()),
+            remainder: remainder.map(r => r.toString()),
             gradPos: gradPos.map(x => x.toString()),
             gradNeg: gradNeg.map(x => x.toString()),
             features: this.privateData.features.map(row => row.map(x => x.toString())),
@@ -447,7 +478,7 @@ class Client {
         
         const proofResult = await this._runZKProof(
             CONFIG.TRAINING_DIR,
-            'sgd_step_quick',
+            'sgd_verified',  // Changed from sgd_step_quick
             inputPath,
             `client${this.clientId}_training`
         );
@@ -457,7 +488,7 @@ class Client {
         }
         
         this.trainingProof = proofResult;
-        printSuccess('Training proof generated');
+        printSuccess('Training proof generated (with verified gradient correctness)');
         
         // Return update package to send to server
         return {
@@ -466,10 +497,173 @@ class Client {
             publicSignals: proofResult.publicSignals,
             root_D: this.root_D.toString(),
             root_G: this.root_G.toString(),
+            root_W: this.root_W.toString(),  // NEW: Include weight commitment
             round: CONFIG.CURRENT_ROUND,
             // In real system, gradient would be encrypted for secure aggregation
             // For now, we send it in the clear
             gradient: gradient
+        };
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────
+    // Helper: Compute gradient using EXACT formula matching the circuit
+    // ─────────────────────────────────────────────────────────────────────
+    _computeVerifiedGradient(features, labels, weights) {
+        const PRECISION = CONFIG.PRECISION;
+        const BATCH_SIZE = CONFIG.BATCH_SIZE;
+        const MODEL_DIM = CONFIG.MODEL_DIM;
+        const DIVISOR = BATCH_SIZE * PRECISION;
+        
+        // Compute summed gradient (matches circuit exactly)
+        const summedGrad = new Array(MODEL_DIM).fill(0);
+        
+        for (let i = 0; i < BATCH_SIZE; i++) {
+            // prediction = dot(features, weights)
+            let prediction = 0;
+            for (let j = 0; j < MODEL_DIM; j++) {
+                prediction += features[i][j] * weights[j];
+            }
+            
+            // error = prediction - label * PRECISION (circuit scales label)
+            const scaledLabel = labels[i] * PRECISION;
+            const error = prediction - scaledLabel;
+            
+            // gradient[j] += error * feature[j]
+            for (let j = 0; j < MODEL_DIM; j++) {
+                summedGrad[j] += error * features[i][j];
+            }
+        }
+        
+        // Compute gradient and remainder:
+        // summedGrad[j] = gradient[j] * DIVISOR + remainder[j]
+        const gradient = [];
+        const remainder = [];
+        for (let j = 0; j < MODEL_DIM; j++) {
+            // Use floor division for gradient
+            const quotient = Math.floor(summedGrad[j] / DIVISOR);
+            const rem = summedGrad[j] - quotient * DIVISOR;
+            gradient.push(quotient);
+            remainder.push(rem);
+        }
+        
+        printInfo(`Computed gradient: [${gradient.join(', ')}]`);
+        printInfo(`Summed gradient: [${summedGrad.slice(0, 2).join(', ')}, ...]`);
+        
+        return { gradient, expectedSummedGrad: summedGrad, remainder };
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────
+    // Phase 4.5: Secure Aggregation - Generate masked update with proof
+    // ─────────────────────────────────────────────────────────────────────
+    async generateSecureAggregationProof(allSharedKeys) {
+        printClient(this.clientId, 'Generating secure aggregation proof...');
+        
+        // Store shared keys for this client
+        // allSharedKeys[i][j] = K_ij (shared key between client i and j)
+        this.sharedKeys = allSharedKeys[this.clientId];
+        
+        // Generate a master key for this client (used in key commitment)
+        // In production, this would be a securely generated secret
+        this.masterKey = F.toObject(poseidon([BigInt(this.clientId), BigInt(12345)]));
+        
+        // Prepare peer-only shared keys array (exclude self)
+        // NUM_PEERS = NUM_CLIENTS - 1 = 2
+        const peerSharedKeys = [];
+        const peerIds = [];
+        for (let j = 1; j <= CONFIG.NUM_CLIENTS; j++) {
+            if (j !== this.clientId) {
+                peerSharedKeys.push(this.sharedKeys[j]);
+                peerIds.push(j);
+            }
+        }
+        
+        // Compute key material commitment matching circuit:
+        // root_K = Poseidon(master_key, shared_key_1, shared_key_2)
+        this.root_K = keyMaterialCommitment(this.masterKey, peerSharedKeys);
+        printInfo(`root_K = ${this.root_K.toString().slice(0, 20)}...`);
+        
+        // Compute masked update: m_i = g_i + Σ_{j≠i} σ_ij * r_ij
+        // where σ_ij = +1 if i < j, -1 if i > j
+        const gradientField = this.gradient.map(g => 
+            g >= 0 ? BigInt(g) : CONFIG.FIELD_PRIME + BigInt(g)
+        );
+        
+        const maskedUpdate = [...gradientField];
+        
+        for (let j = 1; j <= CONFIG.NUM_CLIENTS; j++) {
+            if (j === this.clientId) continue;
+            
+            const sharedKey = this.sharedKeys[j];
+            const mask = derivePairwiseMask(sharedKey, CONFIG.CURRENT_ROUND, this.clientId, j, CONFIG.MODEL_DIM);
+            
+            // σ_ij = +1 if i < j, -1 if i > j
+            const sign = this.clientId < j ? 1n : -1n;
+            
+            for (let k = 0; k < CONFIG.MODEL_DIM; k++) {
+                if (sign === 1n) {
+                    maskedUpdate[k] = (maskedUpdate[k] + mask[k]) % CONFIG.FIELD_PRIME;
+                } else {
+                    maskedUpdate[k] = (maskedUpdate[k] - mask[k] + CONFIG.FIELD_PRIME) % CONFIG.FIELD_PRIME;
+                }
+            }
+        }
+        
+        this.maskedUpdate = maskedUpdate;
+        printInfo(`masked_update[0] = ${maskedUpdate[0].toString().slice(0, 20)}...`);
+        
+        // Prepare circuit input
+        // The circuit expects gradient as field elements (negative values wrapped)
+        // MUST use BigInt and toString to avoid precision loss with large numbers
+        const gradientForCircuit = this.gradient.map(g => 
+            g >= 0 ? BigInt(g).toString() : (CONFIG.FIELD_PRIME + BigInt(g)).toString()
+        );
+        
+        const input = {
+            // Public inputs
+            client_id: this.clientId.toString(),
+            round: CONFIG.CURRENT_ROUND.toString(),
+            root_D: this.root_D.toString(),
+            root_G: this.root_G.toString(),
+            root_W: this.root_W.toString(),
+            root_K: this.root_K.toString(),
+            tauSquared: CONFIG.TAU_SQUARED.toString(),
+            masked_update: maskedUpdate.map(m => m.toString()),
+            peer_ids: peerIds.map(id => id.toString()),
+            
+            // Private inputs (gradientForCircuit is already strings)
+            gradient: gradientForCircuit,
+            master_key: this.masterKey.toString(),
+            shared_keys: peerSharedKeys.map(k => k.toString())
+        };
+        
+        const inputPath = path.join(CONFIG.SECAGG_DIR, `client${this.clientId}_secagg_input.json`);
+        fs.writeFileSync(inputPath, JSON.stringify(input, null, 2));
+        
+        const proofResult = await this._runZKProof(
+            CONFIG.SECAGG_DIR,
+            'secure_masked_update',
+            inputPath,
+            `client${this.clientId}_secagg`
+        );
+        
+        if (!proofResult) {
+            throw new Error(`Client ${this.clientId}: Secure aggregation proof generation failed`);
+        }
+        
+        this.secaggProof = proofResult;
+        printSuccess('Secure aggregation proof generated');
+        
+        // Return masked update package (gradient is hidden behind mask)
+        return {
+            clientId: this.clientId,
+            proof: proofResult.proof,
+            publicSignals: proofResult.publicSignals,
+            root_D: this.root_D.toString(),
+            root_G: this.root_G.toString(),
+            root_W: this.root_W.toString(),
+            root_K: this.root_K.toString(),
+            round: CONFIG.CURRENT_ROUND,
+            masked_update: maskedUpdate.map(m => m.toString())
         };
     }
     
@@ -480,10 +674,10 @@ class Client {
         const wasmPath = path.join(circuitDir, `${circuitName}_js`, `${circuitName}.wasm`);
         const zkeyPath = path.join(circuitDir, `${circuitName}_final.zkey`);
         
-        // Find ptau file
+        // Find ptau file (stored in artifacts/keys/)
         let ptauFile = null;
         const possiblePtau = ['pot17_final.ptau', 'pot14_final.ptau'];
-        const possibleDirs = [CONFIG.PROJECT_ROOT, circuitDir, CONFIG.TRAINING_DIR];
+        const possibleDirs = [CONFIG.KEYS_DIR, CONFIG.PROJECT_ROOT, circuitDir];
         
         for (const dir of possibleDirs) {
             for (const ptau of possiblePtau) {
@@ -604,6 +798,7 @@ class Server {
         this.datasetCommitments = new Map();
         this.balanceProofs = new Map();
         this.trainingUpdates = new Map();
+        this.secaggUpdates = new Map();
         
         this.globalModel = null;
         this.aggregatedGradient = null;
@@ -611,7 +806,8 @@ class Server {
         this.verificationResults = {
             balance: new Map(),
             training: new Map(),
-            binding: new Map()
+            binding: new Map(),
+            secagg: new Map()
         };
     }
     
@@ -684,14 +880,16 @@ class Server {
     }
     
     // ─────────────────────────────────────────────────────────────────────
-    // Phase 4: Verify training proof and check binding
+    // Phase 4: Verify training proof with VERIFIED GRADIENT
+    // Using sgd_verified circuit - public signals include root_W
     // ─────────────────────────────────────────────────────────────────────
     async verifyTrainingProof(updatePackage) {
-        const { clientId, proof, publicSignals, root_D, root_G, round, gradient } = updatePackage;
-        printServer(`Verifying training proof from client ${clientId}...`);
+        const { clientId, proof, publicSignals, root_D, root_G, root_W, round, gradient } = updatePackage;
+        printServer(`Verifying training proof from client ${clientId} (with gradient verification)...`);
         
-        // Public signal order: [client_id, round, root_D, root_G, tauSquared]
-        //                       index: 0      1      2       3       4
+        // Public signal order for sgd_verified: 
+        //   [client_id, round, root_D, root_G, root_W, tauSquared]
+        //   index:  0      1      2       3       4        5
         
         // 1. CRITICAL: Check that root_D matches the one from balance proof
         const balanceProof = this.balanceProofs.get(clientId);
@@ -715,7 +913,9 @@ class Server {
         // 2. Verify public signals match claimed values
         const claimedRootD = publicSignals[2];  // index 2 = root_D
         const claimedRootG = publicSignals[3];  // index 3 = root_G
+        const claimedRootW = publicSignals[4];  // index 4 = root_W (NEW for verified gradient)
         const claimedRound = publicSignals[1];  // index 1 = round
+        const claimedTauSquared = publicSignals[5];  // index 5 = tauSquared
         
         if (claimedRootD !== root_D) {
             printError('root_D mismatch in training public signals!');
@@ -729,16 +929,46 @@ class Server {
             return false;
         }
         
+        if (claimedRootW !== root_W) {
+            printError('root_W mismatch in training public signals!');
+            this.verificationResults.training.set(clientId, false);
+            return false;
+        }
+        
         if (claimedRound !== round.toString()) {
             printError('round mismatch in training public signals!');
             this.verificationResults.training.set(clientId, false);
             return false;
         }
         
-        printSuccess('Public signals verified: root_D, root_G, round match');
+        // 3. HARDENING: Verify tauSquared matches server's clipping bound
+        if (claimedTauSquared !== CONFIG.TAU_SQUARED.toString()) {
+            printError('SECURITY: tauSquared does not match server clipping bound!');
+            printInfo(`Expected: ${CONFIG.TAU_SQUARED}, Got: ${claimedTauSquared}`);
+            this.verificationResults.training.set(clientId, false);
+            return false;
+        }
+        printSuccess('tauSquared matches server clipping bound');
         
-        // 3. Verify ZK proof
-        const vkeyPath = path.join(CONFIG.TRAINING_DIR, 'sgd_step_quick_vkey.json');
+        // 4. HARDENING: Recompute root_G from submitted gradient and verify
+        // This prevents "prove one gradient, aggregate another" attacks
+        const gradientField = gradient.map(g => g >= 0 ? BigInt(g) : CONFIG.FIELD_PRIME + BigInt(g));
+        const recomputedRootG = gradientCommitment(gradientField, clientId, round);
+        
+        if (recomputedRootG.toString() !== root_G) {
+            printError('SECURITY: Recomputed root_G does not match submitted root_G!');
+            printError('Client may be trying to prove one gradient but aggregate another!');
+            printInfo(`Submitted root_G: ${root_G.slice(0, 20)}...`);
+            printInfo(`Recomputed root_G: ${recomputedRootG.toString().slice(0, 20)}...`);
+            this.verificationResults.training.set(clientId, false);
+            return false;
+        }
+        printSuccess('Gradient commitment verified: submitted gradient matches root_G');
+        
+        printSuccess('All public signals and commitments verified');
+        
+        // 5. Verify ZK proof (using sgd_verified circuit)
+        const vkeyPath = path.join(CONFIG.TRAINING_DIR, 'sgd_verified_vkey.json');
         const proofPath = path.join(CONFIG.TRAINING_DIR, `client${clientId}_training_proof.json`);
         const publicPath = path.join(CONFIG.TRAINING_DIR, `client${clientId}_training_public.json`);
         
@@ -755,38 +985,195 @@ class Server {
         
         this.trainingUpdates.set(clientId, updatePackage);
         this.verificationResults.training.set(clientId, true);
-        printSuccess('Training proof VERIFIED');
+        printSuccess('Training proof VERIFIED (gradient correctness included)');
         return true;
     }
     
     // ─────────────────────────────────────────────────────────────────────
-    // Phase 5: Aggregate verified updates
+    // Phase 4.5: Verify secure aggregation proof
+    // ─────────────────────────────────────────────────────────────────────
+    async verifySecureAggregationProof(secaggPackage) {
+        const { clientId, proof, publicSignals, root_D, root_G, root_W, root_K, round, masked_update } = secaggPackage;
+        printServer(`Verifying secure aggregation proof from client ${clientId}...`);
+        
+        // Public signal order for secure_masked_update:
+        //   [client_id, round, root_D, root_G, root_W, root_K, tauSquared, masked_update[0..DIM-1]]
+        
+        // 1. Check that root_G matches the one from training proof (binding)
+        const trainingUpdate = this.trainingUpdates.get(clientId);
+        if (!trainingUpdate) {
+            printError('No training proof found for client!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        
+        if (root_G !== trainingUpdate.root_G) {
+            printError('BINDING VIOLATION: root_G does not match training proof!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        printSuccess('Binding check PASSED: root_G matches training proof');
+        
+        // 2. Cross-check root_D against balance proof (ensures same dataset)
+        const balanceProof = this.balanceProofs.get(clientId);
+        if (!balanceProof) {
+            printError('No balance proof found for client!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        if (root_D !== balanceProof.root_D) {
+            printError('BINDING VIOLATION: root_D does not match balance proof!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        printSuccess('Binding check PASSED: root_D matches balance proof');
+        
+        // 3. Cross-check root_W against training proof (ensures same weights)
+        if (root_W !== trainingUpdate.root_W) {
+            printError('BINDING VIOLATION: root_W does not match training proof!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        printSuccess('Binding check PASSED: root_W matches training proof');
+        
+        // 4. Verify public signals match expected values
+        // Public signal order: [client_id, round, root_D, root_G, root_W, root_K, tauSquared, masked_update[0..DIM-1], peer_ids[...]]
+        const claimedClientId = publicSignals[0];
+        const claimedRound = publicSignals[1];
+        const claimedRootD = publicSignals[2];
+        const claimedRootG = publicSignals[3];
+        const claimedRootW = publicSignals[4];
+        const claimedRootK = publicSignals[5];
+        const claimedTauSquared = publicSignals[6];
+        
+        // Check client_id
+        if (claimedClientId !== clientId.toString()) {
+            printError(`client_id mismatch: expected ${clientId}, got ${claimedClientId}`);
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        
+        // Check round matches expected round
+        if (claimedRound !== round.toString()) {
+            printError(`round mismatch: expected ${round}, got ${claimedRound}`);
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        printSuccess(`round verified: ${claimedRound}`);
+        
+        // Check root_D in public signals
+        if (claimedRootD !== root_D) {
+            printError('root_D mismatch in secagg public signals!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        
+        // Check root_G in public signals
+        if (claimedRootG !== root_G) {
+            printError('root_G mismatch in secagg public signals!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        
+        // Check root_W in public signals
+        if (claimedRootW !== root_W) {
+            printError('root_W mismatch in secagg public signals!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        
+        // Check root_K in public signals
+        if (claimedRootK !== root_K) {
+            printError('root_K mismatch in secagg public signals!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        
+        // Check tauSquared matches server's clipping bound
+        if (claimedTauSquared !== CONFIG.TAU_SQUARED.toString()) {
+            printError(`tauSquared mismatch: expected ${CONFIG.TAU_SQUARED}, got ${claimedTauSquared}`);
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        printSuccess('tauSquared matches server clipping bound');
+        
+        // Check masked_update values in public signals
+        for (let i = 0; i < CONFIG.MODEL_DIM; i++) {
+            const claimedMasked = publicSignals[7 + i];
+            if (claimedMasked !== masked_update[i].toString()) {
+                printError(`masked_update[${i}] mismatch in public signals!`);
+                this.verificationResults.secagg.set(clientId, false);
+                return false;
+            }
+        }
+        printSuccess('All public signals verified');
+        
+        // 5. Verify ZK proof
+        const vkeyPath = path.join(CONFIG.SECAGG_DIR, 'secure_masked_update_vkey.json');
+        const proofPath = path.join(CONFIG.SECAGG_DIR, `client${clientId}_secagg_proof.json`);
+        const publicPath = path.join(CONFIG.SECAGG_DIR, `client${clientId}_secagg_public.json`);
+        
+        const result = runCommand(
+            `npx snarkjs groth16 verify "${vkeyPath}" "${publicPath}" "${proofPath}"`,
+            CONFIG.SECAGG_DIR
+        );
+        
+        if (!result.success) {
+            printError('ZK proof verification failed!');
+            this.verificationResults.secagg.set(clientId, false);
+            return false;
+        }
+        
+        this.secaggUpdates.set(clientId, secaggPackage);
+        this.verificationResults.secagg.set(clientId, true);
+        printSuccess('Secure aggregation proof VERIFIED');
+        return true;
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────
+    // Phase 5: Aggregate verified updates using MASKED UPDATES
+    // Masks cancel during aggregation: Σ m_i = Σ g_i
     // ─────────────────────────────────────────────────────────────────────
     aggregateUpdates() {
-        printServer('Aggregating verified updates...');
+        printServer('Aggregating verified masked updates...');
         
-        // Only aggregate from clients with verified proofs
+        // Only aggregate from clients with ALL proofs verified
         const verifiedClients = [];
-        for (const [clientId, verified] of this.verificationResults.training) {
-            if (verified && this.verificationResults.binding.get(clientId)) {
+        for (const [clientId, verified] of this.verificationResults.secagg) {
+            if (verified && 
+                this.verificationResults.training.get(clientId) &&
+                this.verificationResults.binding.get(clientId)) {
                 verifiedClients.push(clientId);
             }
         }
         
-        printInfo(`Verified clients: ${verifiedClients.length}/${this.registeredClients.size}`);
+        printInfo(`Fully verified clients: ${verifiedClients.length}/${this.registeredClients.size}`);
         
         if (verifiedClients.length === 0) {
             printError('No verified updates to aggregate!');
             return null;
         }
         
-        // Aggregate gradients (simple average)
-        this.aggregatedGradient = new Array(CONFIG.MODEL_DIM).fill(0);
+        // Aggregate MASKED updates (masks cancel out!)
+        // Σ m_i = Σ (g_i + Σ_{j≠i} σ_ij * r_ij) = Σ g_i (since masks cancel)
+        const aggregatedMasked = new Array(CONFIG.MODEL_DIM).fill(0n);
         
         for (const clientId of verifiedClients) {
-            const update = this.trainingUpdates.get(clientId);
+            const update = this.secaggUpdates.get(clientId);
             for (let j = 0; j < CONFIG.MODEL_DIM; j++) {
-                this.aggregatedGradient[j] += update.gradient[j];
+                aggregatedMasked[j] = (aggregatedMasked[j] + BigInt(update.masked_update[j])) % CONFIG.FIELD_PRIME;
+            }
+        }
+        
+        // Convert back from field elements to integers (handle negative values)
+        this.aggregatedGradient = new Array(CONFIG.MODEL_DIM).fill(0);
+        const halfField = CONFIG.FIELD_PRIME / 2n;
+        for (let j = 0; j < CONFIG.MODEL_DIM; j++) {
+            if (aggregatedMasked[j] > halfField) {
+                // Negative number (wrapped around)
+                this.aggregatedGradient[j] = Number(aggregatedMasked[j] - CONFIG.FIELD_PRIME);
+            } else {
+                this.aggregatedGradient[j] = Number(aggregatedMasked[j]);
             }
         }
         
@@ -800,7 +1187,7 @@ class Server {
             this.globalModel[j] -= CONFIG.LEARNING_RATE * this.aggregatedGradient[j];
         }
         
-        printSuccess('Updates aggregated');
+        printSuccess('Masked updates aggregated (masks cancelled!)');
         printInfo(`Aggregated gradient: [${this.aggregatedGradient.slice(0, 3).map(x => x.toFixed(2)).join(', ')}, ...]`);
         printInfo(`Updated model: [${this.globalModel.slice(0, 3).map(x => x.toFixed(4)).join(', ')}, ...]`);
         
@@ -818,6 +1205,7 @@ class Server {
         let totalBalance = 0, passedBalance = 0;
         let totalTraining = 0, passedTraining = 0;
         let totalBinding = 0, passedBinding = 0;
+        let totalSecagg = 0, passedSecagg = 0;
         
         for (const [_, v] of this.verificationResults.balance) {
             totalBalance++;
@@ -831,14 +1219,20 @@ class Server {
             totalBinding++;
             if (v) passedBinding++;
         }
+        for (const [_, v] of this.verificationResults.secagg) {
+            totalSecagg++;
+            if (v) passedSecagg++;
+        }
         
         return {
             balance: { passed: passedBalance, total: totalBalance },
             training: { passed: passedTraining, total: totalTraining },
             binding: { passed: passedBinding, total: totalBinding },
+            secagg: { passed: passedSecagg, total: totalSecagg },
             allPassed: passedBalance === totalBalance && 
                        passedTraining === totalTraining && 
-                       passedBinding === totalBinding
+                       passedBinding === totalBinding &&
+                       passedSecagg === totalSecagg
         };
     }
 }
@@ -917,7 +1311,39 @@ async function runSimulation() {
         }
         
         // ═══════════════════════════════════════════════════════════════════
-        // PHASE 5: Aggregation
+        // PHASE 4.5: Secure Aggregation Key Exchange & Proof
+        // ═══════════════════════════════════════════════════════════════════
+        printPhase('4.5', 'SECURE AGGREGATION');
+        
+        // Simulate key exchange - in reality this would use Diffie-Hellman
+        // allSharedKeys[i][j] = K_ij (shared key between client i and j)
+        printServer('Simulating pairwise key exchange...');
+        const allSharedKeys = {};
+        for (let i = 1; i <= CONFIG.NUM_CLIENTS; i++) {
+            allSharedKeys[i] = {};
+            for (let j = 1; j <= CONFIG.NUM_CLIENTS; j++) {
+                if (i === j) {
+                    allSharedKeys[i][j] = 0n;  // No self-key
+                } else {
+                    // K_ij should equal K_ji
+                    const minId = Math.min(i, j);
+                    const maxId = Math.max(i, j);
+                    // Derive shared key from pair identifiers (simulated)
+                    const keyHash = poseidon([BigInt(minId), BigInt(maxId), BigInt(12345)]);
+                    allSharedKeys[i][j] = F.toObject(keyHash);
+                }
+            }
+        }
+        printSuccess('Pairwise keys established');
+        
+        // Each client generates secure aggregation proof with masked update
+        for (const client of clients) {
+            const secaggPackage = await client.generateSecureAggregationProof(allSharedKeys);
+            await server.verifySecureAggregationProof(secaggPackage);
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 5: Aggregation (using masked updates)
         // ═══════════════════════════════════════════════════════════════════
         printPhase(5, 'AGGREGATION');
         
@@ -937,6 +1363,7 @@ async function runSimulation() {
     ├─────────────────────────────────────────────────────────────┤
     │  Balance Proofs:    ${summary.balance.passed}/${summary.balance.total} verified                             │
     │  Training Proofs:   ${summary.training.passed}/${summary.training.total} verified                             │
+    │  SecureAgg Proofs:  ${summary.secagg.passed}/${summary.secagg.total} verified                             │
     │  Binding Checks:    ${summary.binding.passed}/${summary.binding.total} passed                               │
     ├─────────────────────────────────────────────────────────────┤
     │  Clients Aggregated: ${aggregationResult ? aggregationResult.numClients : 0}/${CONFIG.NUM_CLIENTS}                                │
@@ -951,7 +1378,8 @@ async function runSimulation() {
     1. Clients can generate valid ZK proofs for their private data
     2. Server can verify proofs without seeing private data
     3. Cryptographic binding ensures balance ↔ training consistency
-    4. Aggregation only includes verified updates
+    4. Secure aggregation hides individual gradients (masks cancel)
+    5. Aggregation only includes verified updates
             `, 'gray'));
             return true;
         } else {

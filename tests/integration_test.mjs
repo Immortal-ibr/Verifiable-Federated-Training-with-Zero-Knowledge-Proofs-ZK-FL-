@@ -47,9 +47,10 @@ const CONFIG = {
     BATCH_SIZE: 8,           // Samples per training batch
     TAU_SQUARED: 100000,     // Clipping threshold
     
-    // Paths
-    BALANCE_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'balance'),
-    TRAINING_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'training'),
+    // Paths - artifacts contain compiled circuits
+    BALANCE_DIR: path.join(__dirname, '..', 'artifacts', 'balance'),
+    TRAINING_DIR: path.join(__dirname, '..', 'artifacts', 'training'),
+    KEYS_DIR: path.join(__dirname, '..', 'artifacts', 'keys'),
     
     // Poseidon chunk size
     CHUNK_SIZE: 16,

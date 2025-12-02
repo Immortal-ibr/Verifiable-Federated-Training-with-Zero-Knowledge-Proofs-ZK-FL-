@@ -1,53 +1,101 @@
-# Built things
-_Debug/
-Compiled/
+# ═══════════════════════════════════════════════════════════════════════════
+# ZK-FL PROJECT: .gitignore
+# ═══════════════════════════════════════════════════════════════════════════
 
-#circom
-circom/
-
-# AudioCache can be rebuilt from sources
-AudioCache/
-
-# Lockfile
-_OpenInEditor.lock
-
-# User settings
-Game.agf.user
-*.crm.user
-
-# Backups
-Game.agf.bak
-backup_acsprset.spr
-
-# Memory dumps
-*.dmp
-
-# Temporary files
-# temporarily created during sprite or room background compression
-~aclzw.tmp
-# temporary, main game data, before getting packed into exe
-game28.dta
-# temporary build of the game before being moved to Compiled/ folder
-*.exe
-
-# Log files
-warnings.log
-
-# Node.js dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+# Node.js
+# ─────────────────────────────────────────────────────────────────────────────
 node_modules/
 package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Build artifacts
-build/
-dist/
+# ─────────────────────────────────────────────────────────────────────────────
+# ZK Circuit Artifacts (large compiled files)
+# ─────────────────────────────────────────────────────────────────────────────
+# These are generated during circuit compilation and can be regenerated
 *.r1cs
 *.wasm
 *.wtns
-*.zkey
 *.sym
 
-# Powers of tau files (large ceremony files)
+# Proving keys (very large, ~100MB+ each)
+*.zkey
+*_0000.zkey
+*_0001.zkey
+*_final.zkey
+
+# Powers of Tau ceremony files (large, downloadable from iden3)
 *.ptau
+
+# Verification keys are small and useful to commit
+# !*_vkey.json
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generated JS witness calculators
+# ─────────────────────────────────────────────────────────────────────────────
+*_js/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime Proof/Witness Files
+# ─────────────────────────────────────────────────────────────────────────────
+# These are generated during test runs
+*_input.json
+*_proof.json
+*_public.json
+client*_*.wtns
+client*_*.json
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Artifacts directory (generated files)
+# ─────────────────────────────────────────────────────────────────────────────
+artifacts/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IDE / Editor
+# ─────────────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OS Generated
+# ─────────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python (for test data generators)
+# ─────────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.env
+.venv/
+venv/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logs
+# ─────────────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Temporary files
+# ─────────────────────────────────────────────────────────────────────────────
+*.tmp
+*.temp
+.cache/
 
 # Generated proofs
 proof.json

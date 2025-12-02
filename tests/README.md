@@ -91,12 +91,12 @@ npm install circomlibjs
 ```
 
 ### "Compilation failed"
-Check that all `.circom` files are present in the circuits directories.
+Check that all `.circom` files are present in the `src/circuits/` directory.
 
 ### "No ptau file found"
 Download the Powers of Tau file:
 ```bash
-cd zk/circuits/training
+cd artifacts/keys
 npx snarkjs powersoftau new bn128 17 pot17_0000.ptau
 npx snarkjs powersoftau contribute pot17_0000.ptau pot17_final.ptau --name="contribution" -e="random"
 ```

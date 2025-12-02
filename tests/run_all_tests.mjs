@@ -25,7 +25,12 @@ const tests = [
     {
         name: 'Full System Simulation',
         file: 'full_system_simulation.mjs',
-        description: 'Prover/Verifier simulation with 3 clients'
+        description: 'E2E prover/verifier with 3 clients using sgd_verified (gradient correctness)'
+    },
+    {
+        name: 'Verified Gradient Test',
+        file: 'test_verified_gradient.mjs',
+        description: 'Standalone gradient correctness test (sanity check for sgd_verified circuit)'
     },
     // Uncomment for full test:
     // {

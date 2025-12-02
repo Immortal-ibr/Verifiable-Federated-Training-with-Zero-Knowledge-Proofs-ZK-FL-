@@ -42,9 +42,10 @@ const CONFIG = {
     CLIENT_ID: 1,            // Client identifier
     ROUND: 1,                // Training round number
     
-    // Paths
-    BALANCE_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'balance'),
-    TRAINING_DIR: path.join(__dirname, '..', 'zk', 'circuits', 'training'),
+    // Paths - artifacts contain compiled circuits
+    BALANCE_DIR: path.join(__dirname, '..', 'artifacts', 'balance'),
+    TRAINING_DIR: path.join(__dirname, '..', 'artifacts', 'training'),
+    KEYS_DIR: path.join(__dirname, '..', 'artifacts', 'keys'),
     
     // Poseidon chunk size
     CHUNK_SIZE: 16,
