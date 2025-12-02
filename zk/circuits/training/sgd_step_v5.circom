@@ -86,6 +86,7 @@ template VerifyClippingSound(DIM) {
 template TrainingStepV5(BATCH_SIZE, MODEL_DIM, DEPTH) {
     // PUBLIC INPUTS
     signal input client_id;
+    signal input round;
     signal input root_D;
     signal input root_G;
     signal input tauSquared;
@@ -125,17 +126,43 @@ template TrainingStepV5(BATCH_SIZE, MODEL_DIM, DEPTH) {
     }
     clipVerifier.tauSquared <== tauSquared;
     clipVerifier.valid === 1;
-    
-    // STEP 3: VERIFY GRADIENT COMMITMENT
-    component gradHash = VectorHash(MODEL_DIM);
+
+    // STEP 2b: INPUT RANGE CHECKS TO PREVENT OVERFLOWS
+    // Bound gradient limbs and tauSquared to reasonable sizes (2^30 and 2^60 respectively)
+    var MAX_GRAD = 1 << 30;
+    var MAX_TAU_SQ = (1 << 30) * (1 << 30); // 2^60
+
+    component gradPosBound[MODEL_DIM];
+    component gradNegBound[MODEL_DIM];
     for (var j = 0; j < MODEL_DIM; j++) {
-        gradHash.values[j] <== clipVerifier.gradient[j];
+        gradPosBound[j] = LessThan(64);
+        gradPosBound[j].in[0] <== gradPos[j];
+        gradPosBound[j].in[1] <== MAX_GRAD;
+        gradPosBound[j].out === 1;
+
+        gradNegBound[j] = LessThan(64);
+        gradNegBound[j].in[0] <== gradNeg[j];
+        gradNegBound[j].in[1] <== MAX_GRAD;
+        gradNegBound[j].out === 1;
     }
-    root_G === gradHash.hash;
+
+    component tauBound = LessThan(80);
+    tauBound.in[0] <== tauSquared;
+    tauBound.in[1] <== MAX_TAU_SQ;
+    tauBound.out === 1;
+
+    // STEP 3: VERIFY GRADIENT COMMITMENT
+    component gradCommit = GradientCommitment(MODEL_DIM);
+    for (var j = 0; j < MODEL_DIM; j++) {
+        gradCommit.gradient[j] <== clipVerifier.gradient[j];
+    }
+    gradCommit.client_id <== client_id;
+    gradCommit.round <== round;
+    root_G === gradCommit.commitment;
     
     // Use client_id
     signal clientCheck;
     clientCheck <== client_id * 0;
 }
 
-component main {public [client_id, root_D, root_G, tauSquared]} = TrainingStepV5(8, 16, 7);
+component main {public [client_id, round, root_D, root_G, tauSquared]} = TrainingStepV5(8, 16, 7);

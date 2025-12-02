@@ -26,6 +26,8 @@ function seededRandom() {
 async function main() {
     const poseidon = await buildPoseidon();
     const F = poseidon.F;
+    const clientId = 1n;
+    const round = 1n;
     
     console.log("═".repeat(60));
     console.log("V5 TEST DATA GENERATION - Sign-Magnitude Decomposition");
@@ -191,15 +193,24 @@ async function main() {
     console.log(`    normSquared: ${normSquared}`);
     console.log(`    tauSquared:  ${tauSquared} (norm + 1000 margin)`);
     
+    // Commitment helper matches GradientCommitment in-circuit
+    function gradientCommitment(gradientValues, clientIdBig, roundBig) {
+        const gradHash = vectorHash(gradientValues);
+        const metaHash = poseidon([clientIdBig, roundBig]);
+        const finalHash = poseidon([gradHash, metaHash]);
+        return F.toObject(finalHash);
+    }
+
     // Compute gradient commitment (using field representation)
     console.log("\n[5] Computing gradient commitment...");
     const gradientField = gradient.map(g => g >= 0 ? BigInt(g) : p + BigInt(g));
-    const root_G = vectorHash(gradientField);
+    const root_G = gradientCommitment(gradientField, clientId, round);
     console.log(`    root_G: ${root_G.toString().slice(0, 40)}...`);
     
     // Build circuit input
     const input = {
-        client_id: "1",
+        client_id: clientId.toString(),
+        round: round.toString(),
         root_D: root_D.toString(),
         root_G: root_G.toString(),
         tauSquared: tauSquared.toString(),

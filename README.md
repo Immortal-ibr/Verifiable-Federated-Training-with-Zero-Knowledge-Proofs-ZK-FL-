@@ -211,11 +211,14 @@ npx snarkjs zkey export verificationkey sgd_step_v5_final.zkey verification_key.
 node sgd_step_v5_js/generate_witness.cjs sgd_step_v5_js/sgd_step_v5.wasm test_input_v5.json witness.wtns
 
 # 5. Generate proof
-npx snarkjs groth16 prove sgd_step_v5_final.zkey witness.wtns proof.json public.json
+  npx snarkjs groth16 prove sgd_step_v5_final.zkey witness.wtns proof.json public.json
 
-# 6. Verify proof
-npx snarkjs groth16 verify verification_key.json public.json proof.json
-# Output: [INFO] snarkJS: OK!
+  # 6. Verify proof
+  npx snarkjs groth16 verify verification_key.json public.json proof.json
+  # Output: [INFO] snarkJS: OK!
+
+  # Public inputs (v5)
+  # client_id, round, root_D, root_G, tauSquared
 ```
 
 ## 🔑 Key Concepts
