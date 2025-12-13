@@ -5,7 +5,6 @@
   <img src="https://img.shields.io/badge/snarkjs-Groth16-green" alt="snarkjs">
   <img src="https://img.shields.io/badge/Curve-BN254-orange" alt="BN254">
   <img src="https://img.shields.io/badge/Node.js-18%2B-brightgreen" alt="Node.js">
-  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
 </p>
 
 A cryptographic framework for **privacy-preserving federated learning** using Zero-Knowledge Proofs. This system allows multiple parties (e.g., hospitals, banks) to collaboratively train a machine learning model **without revealing their private data** while providing **mathematical guarantees** that training was performed correctly.
@@ -698,3 +697,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 <p align="center">
   <b>Built with ❤️ for privacy-preserving machine learning</b>
 </p>
+
